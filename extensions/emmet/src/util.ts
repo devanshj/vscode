@@ -60,6 +60,10 @@ export function isStyleSheet(syntax: string): boolean {
 	return (stylesheetSyntaxes.indexOf(syntax) > -1);
 }
 
+export function getEmmetSyntaxType(syntax: string) {
+	return isStyleSheet(syntax) ? "stylesheet" as const : "markup" as const;
+}
+
 export function validate(allowStylesheet: boolean = true): boolean {
 	let editor = vscode.window.activeTextEditor;
 	if (!editor) {

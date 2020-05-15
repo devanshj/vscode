@@ -6,8 +6,9 @@
 import * as vscode from 'vscode';
 import { Node, Stylesheet } from 'EmmetNode';
 import { isValidLocationForEmmetAbbreviation, getSyntaxFromArgs } from './abbreviationActions';
-import { getEmmetHelper, getMappingForIncludedLanguages, parsePartialStylesheet, getEmmetConfiguration, getEmmetMode, isStyleSheet, parseDocument, getNode, allowedMimeTypesInScriptTag, trimQuotes } from './util';
+import { getMappingForIncludedLanguages, parsePartialStylesheet, getEmmetConfiguration, getEmmetMode, isStyleSheet, parseDocument, getNode, allowedMimeTypesInScriptTag, trimQuotes } from './util';
 import { getLanguageService, TextDocument, TokenType } from 'vscode-html-languageservice';
+import { extractAbbreviationFromDocument } from './extractAbbreviation';
 
 export class DefaultCompletionItemProvider implements vscode.CompletionItemProvider {
 
@@ -58,7 +59,6 @@ export class DefaultCompletionItemProvider implements vscode.CompletionItemProvi
 			return;
 		}
 
-		const helper = getEmmetHelper();
 		let validateLocation = syntax === 'html' || syntax === 'jsx' || syntax === 'xml';
 		let rootNode: Node | undefined = undefined;
 		let currentNode: Node | null = null;
@@ -132,8 +132,8 @@ export class DefaultCompletionItemProvider implements vscode.CompletionItemProvi
 			}
 		}
 
-		const extractAbbreviationResults = helper.extractAbbreviation(document, position, !isStyleSheet(syntax));
-		if (!extractAbbreviationResults || !helper.isAbbreviationValid(syntax, extractAbbreviationResults.abbreviation)) {
+		const extractAbbreviationResults = extractAbbreviationFromDocument(document, position, syntax);
+		if (!extractAbbreviationResults) {
 			return;
 		}
 

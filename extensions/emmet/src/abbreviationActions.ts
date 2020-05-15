@@ -6,6 +6,7 @@
 import * as vscode from 'vscode';
 import { Node, HtmlNode, Rule, Property, Stylesheet } from 'EmmetNode';
 import { getEmmetHelper, getNode, getInnerRange, getMappingForIncludedLanguages, parseDocument, validate, getEmmetConfiguration, isStyleSheet, getEmmetMode, parsePartialStylesheet, isStyleAttribute, getEmbeddedCssNodeIfAny, allowedMimeTypesInScriptTag } from './util';
+import { extractAbbreviationFromText, extractAbbreviationFromDocument } from './extractAbbreviation';
 
 const trimRegex = /[\u00a0]*[\d#\-\*\u2022]+\.?/;
 const hexColorRegex = /^#[\da-fA-F]{0,6}$/;
@@ -20,7 +21,6 @@ interface ExpandAbbreviationInput {
 	abbreviation: string;
 	rangeToReplace: vscode.Range;
 	textToWrap?: string[];
-	filter?: string;
 }
 
 interface PreviewRangesWithContent {
@@ -177,14 +177,14 @@ function doWrapping(individualLines: boolean, args: any) {
 			return inPreview ? revertPreview().then(() => { return false; }) : Promise.resolve(inPreview);
 		}
 
-		let extractedResults = helper.extractAbbreviationFromText(inputAbbreviation);
+		let extractedResults = extractAbbreviationFromText(inputAbbreviation, syntax);
 		if (!extractedResults) {
 			return Promise.resolve(inPreview);
 		} else if (extractedResults.abbreviation !== inputAbbreviation) {
 			// Not clear what should we do in this case. Warn the user? How?
 		}
 
-		let { abbreviation, filter } = extractedResults;
+		let { abbreviation } = extractedResults;
 		if (definitive) {
 			const revertPromise = inPreview ? revertPreview() : Promise.resolve();
 			return revertPromise.then(() => {
@@ -196,14 +196,14 @@ function doWrapping(individualLines: boolean, args: any) {
 					} else {
 						textToWrap = rangeToReplace.isSingleLine ? ['$TM_SELECTED_TEXT'] : ['\n\t$TM_SELECTED_TEXT\n'];
 					}
-					return { syntax: syntax || '', abbreviation, rangeToReplace, textToWrap, filter };
+					return { syntax: syntax || '', abbreviation, rangeToReplace, textToWrap };
 				});
 				return expandAbbreviationInRange(editor, expandAbbrList, !individualLines).then(() => { return true; });
 			});
 		}
 
 		const expandAbbrList: ExpandAbbreviationInput[] = rangesToReplace.map(rangesAndContent => {
-			return { syntax: syntax || '', abbreviation, rangeToReplace: rangesAndContent.originalRange, textToWrap: rangesAndContent.textToWrapInPreview, filter };
+			return { syntax: syntax || '', abbreviation, rangeToReplace: rangesAndContent.originalRange, textToWrap: rangesAndContent.textToWrapInPreview };
 		});
 
 		return applyPreview(expandAbbrList);
@@ -273,39 +273,41 @@ export function expandEmmetAbbreviation(args: any): Thenable<boolean | undefined
 	let abbreviationList: ExpandAbbreviationInput[] = [];
 	let firstAbbreviation: string;
 	let allAbbreviationsSame: boolean = true;
-	const helper = getEmmetHelper();
 
-	let getAbbreviation = (document: vscode.TextDocument, selection: vscode.Selection, position: vscode.Position, syntax: string): [vscode.Range | null, string, string] => {
-		let rangeToReplace: vscode.Range = selection;
-		let abbr = document.getText(rangeToReplace);
-		if (!rangeToReplace.isEmpty) {
-			let extractedResults = helper.extractAbbreviationFromText(abbr);
-			if (extractedResults) {
-				return [rangeToReplace, extractedResults.abbreviation, extractedResults.filter];
-			}
-			return [null, '', ''];
+	let getAbbreviation = (document: vscode.TextDocument, selection: vscode.Selection, position: vscode.Position, syntax: string): [vscode.Range | null, string] => {
+
+		if (!selection.isEmpty) {
+			let extractedResults = extractAbbreviationFromText(
+				document.getText(selection),
+				syntax
+			);
+
+			if (!extractedResults) return [null, ''];
+			return [selection, extractedResults.abbreviation];
 		}
-
-		const currentLine = editor.document.lineAt(position.line).text;
-		const textTillPosition = currentLine.substr(0, position.character);
 
 		// Expand cases like <div to <div></div> explicitly
 		// else we will end up with <<div></div>
 		if (syntax === 'html') {
-			let matches = textTillPosition.match(/<(\w+)$/);
+			let matches =
+				document
+				.lineAt(position.line).text
+				.substring(0, position.character)
+				.match(/<(\w+)$/);
+
 			if (matches) {
-				abbr = matches[1];
-				rangeToReplace = new vscode.Range(position.translate(0, -(abbr.length + 1)), position);
-				return [rangeToReplace, abbr, ''];
+				let tagname = matches[1];
+				return [
+					new vscode.Range(position.translate(0, -(tagname.length + 1)), position),
+					tagname
+				];
 			}
 		}
-		let extractedResults = helper.extractAbbreviation(editor.document, position, false);
-		if (!extractedResults) {
-			return [null, '', ''];
-		}
 
-		let { abbreviationRange, abbreviation, filter } = extractedResults;
-		return [new vscode.Range(abbreviationRange.start.line, abbreviationRange.start.character, abbreviationRange.end.line, abbreviationRange.end.character), abbreviation, filter];
+		let extracted = extractAbbreviationFromDocument(editor.document, position, syntax);
+		if (!extracted) return [null, ''];
+
+		return [extracted.abbreviationRange, extracted.abbreviation];
 	};
 
 	let selectionsInReverseOrder = editor.selections.slice(0);
@@ -333,11 +335,8 @@ export function expandEmmetAbbreviation(args: any): Thenable<boolean | undefined
 
 	selectionsInReverseOrder.forEach(selection => {
 		let position = selection.isReversed ? selection.anchor : selection.active;
-		let [rangeToReplace, abbreviation, filter] = getAbbreviation(editor.document, selection, position, syntax);
+		let [rangeToReplace, abbreviation] = getAbbreviation(editor.document, selection, position, syntax);
 		if (!rangeToReplace) {
-			return;
-		}
-		if (!helper.isAbbreviationValid(syntax, abbreviation)) {
 			return;
 		}
 		let currentNode = getNode(getRootNode(), position, true);
@@ -367,7 +366,7 @@ export function expandEmmetAbbreviation(args: any): Thenable<boolean | undefined
 			allAbbreviationsSame = false;
 		}
 
-		abbreviationList.push({ syntax: syntaxToUse, abbreviation, rangeToReplace, filter });
+		abbreviationList.push({ syntax: syntaxToUse, abbreviation, rangeToReplace });
 	});
 
 	return expandAbbreviationInRange(editor, abbreviationList, allAbbreviationsSame).then(success => {
@@ -610,14 +609,9 @@ function expandAbbreviationInRange(editor: vscode.TextEditor, expandAbbrList: Ex
  */
 function expandAbbr(input: ExpandAbbreviationInput): string {
 	const helper = getEmmetHelper();
-	const expandOptions = helper.getExpandOptions(input.syntax, getEmmetConfiguration(input.syntax), input.filter);
+	const expandOptions = helper.getExpandOptions(input.syntax, getEmmetConfiguration(input.syntax));
 
 	if (input.textToWrap) {
-		if (input.filter && input.filter.indexOf('t') > -1) {
-			input.textToWrap = input.textToWrap.map(line => {
-				return line.replace(trimRegex, '').trim();
-			});
-		}
 		expandOptions['text'] = input.textToWrap;
 
 		// Below fixes https://github.com/Microsoft/vscode/issues/29898
